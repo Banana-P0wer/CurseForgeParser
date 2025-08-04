@@ -228,6 +228,19 @@ class Fetcher:
         log(f"[WARN] {url} — {msg}", self.log)
 
 
+def load_existing_slugs(csv_path: str) -> set:
+    if not os.path.exists(csv_path):
+        return set()
+    slugs = set()
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            slug = row.get("slug")
+            if slug:
+                slugs.add(slug)
+    return slugs
+
+
 async def producer(fetcher: Fetcher,
                    page_from: int,
                    pages: int,
@@ -256,9 +269,7 @@ async def producer(fetcher: Fetcher,
     await out_q.put((-1, None, None))
 
 
-async def consumer(out_q: "asyncio.Queue[Tuple[int, Optional[List[Dict[str, Any]]], Optional[str]]]",
-                   writer: csv.DictWriter,
-                   log_file):
+async def consumer(out_q, writer, log_file, seen_slugs: set):
     total_rows = 0
     pages_ok = 0
     pages_skip = 0
@@ -280,6 +291,9 @@ async def consumer(out_q: "asyncio.Queue[Tuple[int, Optional[List[Dict[str, Any]
             continue
 
         for r in rows:
+            if r["slug"] in seen_slugs:
+                continue
+            seen_slugs.add(r["slug"])
             writer.writerow(r)
             total_rows += 1
 
@@ -321,6 +335,8 @@ async def main_async(args):
     concurrency = max(1, args.concurrency)
 
     writer, _, f_csv = ensure_csv_writer(csv_path)
+    seen_slugs = load_existing_slugs(csv_path)
+
     with open(log_path, "a", encoding="utf-8") as f_log:
         headers = {
             "User-Agent": USER_AGENT,
@@ -336,7 +352,7 @@ async def main_async(args):
             fetcher = Fetcher(session=session, log_file=f_log, concurrency=concurrency)
             out_q: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 8)
             prod_task = asyncio.create_task(producer(fetcher, page_from, pages, page_size, out_q))
-            cons_task = asyncio.create_task(consumer(out_q, writer, f_log))
+            cons_task = asyncio.create_task(consumer(out_q, writer, f_log, seen_slugs))
 
             try:
                 await prod_task
