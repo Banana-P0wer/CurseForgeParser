@@ -52,18 +52,8 @@ USER_AGENT = (
 )
 
 MONTHS = {
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "may": 5,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
 }
 
 
@@ -149,7 +139,6 @@ def parse_card(card) -> Dict[str, Any]:
     gv_node = card.select_one("ul.details-list li.detail-game-version")
     game_version = gv_node.get_text(strip=True) if gv_node else ""
 
-    # категории без "Mods"
     stop_cats = {"mods"}
     raw_cats = [a.get_text(strip=True) for a in card.select("ul.categories li a")]
     norm_cats, seen = [], set()
@@ -244,20 +233,26 @@ async def producer(fetcher: Fetcher,
                    pages: int,
                    page_size: int,
                    out_q: "asyncio.Queue[Tuple[int, Optional[List[Dict[str, Any]]], Optional[str]]]"):
-    for page in range(page_from, page_from + pages):
+    page = page_from
+    while page < page_from + pages:
         params = f"?page={page}&pageSize={page_size}&sortBy=total+downloads&class=mc-mods"
         url = urljoin(BASE_URL, SEARCH_PATH + params)
         html = await fetcher.fetch_html(url)
         if html is None:
             await out_q.put((page, None, None))
             await fetcher.polite_sleep()
+            page += 1
             continue
         try:
             rows = parse_search_html(html)
+            if not rows:
+                log(f"[END]  page={page} — пустая страница, завершаем", fetcher.log)
+                break
             await out_q.put((page, rows, None))
         except Exception as e:
             await out_q.put((page, None, f"{repr(e)}\n{traceback.format_exc()}"))
         await fetcher.polite_sleep()
+        page += 1
     await out_q.put((-1, None, None))
 
 
@@ -313,7 +308,15 @@ async def main_async(args):
     csv_path = args.csv
     log_path = args.log
     page_from = max(1, args.page_from)
-    pages = max(1, args.pages)
+    try:
+        pages = int(args.pages)
+        infinite = False
+    except ValueError:
+        if args.pages.strip() == "*":
+            infinite = True
+            pages = float("inf")
+        else:
+            raise ValueError(f"Неверное значение --pages: {args.pages}")
     page_size = max(1, min(50, args.page_size))
     concurrency = max(1, args.concurrency)
 
@@ -327,7 +330,7 @@ async def main_async(args):
         }
         connector = aiohttp.TCPConnector(limit=concurrency * 4, ttl_dns_cache=300)
 
-        log(f"[START] from page={page_from}, pages={pages}, page_size={page_size}, concurrency={concurrency}", f_log)
+        log(f"[START] from page={page_from}, pages={'∞' if infinite else pages}, page_size={page_size}, concurrency={concurrency}", f_log)
 
         async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
             fetcher = Fetcher(session=session, log_file=f_log, concurrency=concurrency)
@@ -352,7 +355,7 @@ async def main_async(args):
 def main():
     parser = argparse.ArgumentParser(prog="curseforge-mods-parser",
                                      description="CurseForge Minecraft mods listing parser (async)")
-    parser.add_argument("--pages", type=int, default=1, help="сколько страниц обработать; дефолт 1")
+    parser.add_argument("--pages", type=str, default="1", help="сколько страниц обработать (число или *); дефолт 1")
     parser.add_argument("--page-from", type=int, default=1, help="с какой страницы начинать; дефолт 1")
     parser.add_argument("--page-size", type=int, default=20, help="размер страницы; дефолт 20")
     parser.add_argument("--concurrency", type=int, default=4, help="число одновременных запросов; дефолт 4")
