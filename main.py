@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.curseforge.com"
 SEARCH_PATH = "/minecraft/search"
+FILES_PATH = "/minecraft/mc-mods/{slug}/files/all"
 
 DEFAULT_CSV_PATH = "curseforge_dataset.csv"
 DEFAULT_LOG_PATH = "curseforge.log"
@@ -241,6 +242,54 @@ def load_existing_slugs(csv_path: str) -> set:
     return slugs
 
 
+async def enrich_record(record: Dict[str, Any], fetcher: Fetcher):
+    slug = record["slug"]
+    if not slug:
+        return
+
+    # страница проекта
+    mod_url = urljoin(BASE_URL, f"/minecraft/mc-mods/{slug}")
+    html_mod = await fetcher.fetch_html(mod_url)
+    await fetcher.polite_sleep()
+    if html_mod:
+        soup = BeautifulSoup(html_mod, "html.parser")
+
+        downloads_span = soup.select_one("li.detail-downloads span")
+        if downloads_span:
+            dl_val = parse_downloads(downloads_span.get_text(strip=True))
+            if dl_val is not None:
+                record["downloads"] = dl_val
+
+        proj_id_span = soup.select_one("span.project-id")
+        if proj_id_span:
+            record["id"] = proj_id_span.get_text(strip=True)
+
+        license_dd = soup.select_one("#licenseType")
+        if license_dd:
+            record["license"] = license_dd.get_text(strip=True)
+
+        created_dd = soup.select_one("section h2:contains('About Project') + dl dd span")
+        if created_dd and not record["created_at"]:
+            record["created_at"] = parse_mmddyyyy(created_dd.get_text(strip=True)) or ""
+
+        updated_dd = soup.select_one("section h2:contains('About Project') + dl dd span+span")
+        if updated_dd:
+            record["updated_at"] = parse_mmddyyyy(updated_dd.get_text(strip=True)) or record["updated_at"]
+
+    # страница файлов
+    files_url = urljoin(BASE_URL, f"/minecraft/mc-mods/{slug}/files/all?page=1&pageSize=20")
+    html_files = await fetcher.fetch_html(files_url)
+    await fetcher.polite_sleep()
+    if html_files:
+        soup_f = BeautifulSoup(html_files, "html.parser")
+        li_nodes = soup_f.select("div.dropdown ul.dropdown-list li")
+        loaders = {li.get_text(strip=True).lower() for li in li_nodes}
+        record["is_forge"] = "yes" if "forge" in loaders else ""
+        record["is_fabric"] = "yes" if "fabric" in loaders else ""
+        record["is_neoforge"] = "yes" if "neoforge" in loaders else ""
+        record["is_quilt"] = "yes" if "quilt" in loaders else ""
+
+
 async def producer(fetcher: Fetcher,
                    page_from: int,
                    pages: int,
@@ -269,7 +318,7 @@ async def producer(fetcher: Fetcher,
     await out_q.put((-1, None, None))
 
 
-async def consumer(out_q, writer, log_file, seen_slugs: set):
+async def consumer(out_q, writer, log_file, seen_slugs: set, fetcher: Fetcher):
     total_rows = 0
     pages_ok = 0
     pages_skip = 0
@@ -293,6 +342,10 @@ async def consumer(out_q, writer, log_file, seen_slugs: set):
         for r in rows:
             if r["slug"] in seen_slugs:
                 continue
+            try:
+                await enrich_record(r, fetcher)
+            except Exception as e:
+                log(f"[ENRICH] slug={r['slug']} — {repr(e)}", log_file)
             seen_slugs.add(r["slug"])
             writer.writerow(r)
             total_rows += 1
@@ -352,7 +405,7 @@ async def main_async(args):
             fetcher = Fetcher(session=session, log_file=f_log, concurrency=concurrency)
             out_q: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 8)
             prod_task = asyncio.create_task(producer(fetcher, page_from, pages, page_size, out_q))
-            cons_task = asyncio.create_task(consumer(out_q, writer, f_log, seen_slugs))
+            cons_task = asyncio.create_task(consumer(out_q, writer, f_log, seen_slugs, fetcher))
 
             try:
                 await prod_task
