@@ -4,6 +4,6 @@ Asynchronous, fault-tolerant web scraper for CurseForge Minecraft mods, collecti
 Designed as a resilient async pipeline with deduplication, throttling, exponential backoff retries, field normalization, and clean CSV output. Suitable for long-running incremental data collection, reproducible restarts, and downstream analytics.
 
 
-![CurseForge Screenshot](Screenshot.png)  
+[![Screenshot-1.png](https://i.postimg.cc/VkPFC388/Screenshot-1.png)](https://postimg.cc/RNGfrphs)
 <sub>Source: www.curseforge.com</sub>
 
